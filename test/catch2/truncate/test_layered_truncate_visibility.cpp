@@ -47,7 +47,6 @@ public:
         REQUIRE(__wt_rwlock_init(session, &layered_table.truncate_lock) == 0);
 
         __wt_process.disagg_fast_truncate_2026 = true;
-        set_reader(50, WT_TS_NONE);
     }
 
     ~layered_truncate_visibility_fixture()
@@ -60,19 +59,21 @@ public:
     }
 
     /*
-     * Reset the mock transaction into a snapshot reader state for visibility checks. The fixture
-     * keeps snap_min/snap_max fixed at 100/200 so tests can classify txn ids below 100 as already
-     * visible and ids at or above 200 as still in-flight without building an explicit snapshot
-     * array.
+     * Reset the mock transaction into a snapshot reader state for visibility checks. By default,
+     * snap_min/snap_max stay at 100/200 so tests can classify txn ids below 100 as already visible
+     * and ids at or above 200 as still in-flight without building an explicit snapshot array, while
+     * still allowing tests to override the snapshot window when needed.
      */
     void
-    set_reader(uint64_t txn_id, wt_timestamp_t read_timestamp)
+    set_reader(uint64_t txn_id, wt_timestamp_t read_timestamp,
+      WT_TXN_ISOLATION isolation = WT_ISO_SNAPSHOT, uint64_t snap_min = 100,
+      uint64_t snap_max = 200)
     {
         WT_CLEAR(*session->txn);
 
-        session->txn->isolation = WT_ISO_SNAPSHOT;
-        session->txn->snapshot_data.snap_min = 100;
-        session->txn->snapshot_data.snap_max = 200;
+        session->txn->isolation = isolation;
+        session->txn->snapshot_data.snap_min = snap_min;
+        session->txn->snapshot_data.snap_max = snap_max;
         session->txn->snapshot_data.snapshot = nullptr;
         session->txn->snapshot_data.snapshot_count = 0;
         F_SET(session->txn, WT_TXN_HAS_SNAPSHOT);
@@ -117,11 +118,12 @@ public:
         entry->txn_id = txn_id;
         entry->start_ts = start_ts;
         entry->durable_ts = durable_ts;
+        entry->commit_state = (start_ts != WT_TS_NONE || durable_ts != WT_TS_NONE) ?
+          WT_TRUNCATE_COMMIT_PUBLISHED :
+          WT_TRUNCATE_COMMIT_INIT;
 
-        if (start != nullptr)
-            REQUIRE(__wt_buf_set(session, &entry->start_key, start, strlen(start)) == 0);
-        if (stop != nullptr)
-            REQUIRE(__wt_buf_set(session, &entry->stop_key, stop, strlen(stop)) == 0);
+        REQUIRE(__wt_buf_set(session, &entry->start_key, start, strlen(start)) == 0);
+        REQUIRE(__wt_buf_set(session, &entry->stop_key, stop, strlen(stop)) == 0);
 
         TAILQ_INSERT_TAIL(&layered_table.truncateqh, entry, q);
         return entry;
@@ -152,6 +154,7 @@ TEST_CASE_METHOD(
 
     WT_TRUNCATE *matched = nullptr;
     const char *key = "0150";
+    set_reader(txn_id, WT_TS_NONE);
     REQUIRE(truncate_visible(key, &matched) == 0);
     REQUIRE(matched != nullptr);
 
@@ -294,7 +297,7 @@ TEST_CASE_METHOD(layered_truncate_visibility_fixture, "truncate commit stamps th
     REQUIRE(truncate_visible(overlap_key) == WT_NOTFOUND);
     REQUIRE(truncate_visible(overlap_only_key) == WT_NOTFOUND);
 
-    txn_id = 90;
+    txn_id = 250;
     const wt_timestamp_t commit_timestamp = 30;
     const wt_timestamp_t durable_timestamp = 40;
 
@@ -304,22 +307,39 @@ TEST_CASE_METHOD(layered_truncate_visibility_fixture, "truncate commit stamps th
     op.u.follower_truncate.t = committed;
 
     __wti_mark_committed_truncate_table_apply(session, &layered_table, &op);
-    REQUIRE(committed->txn_id == 90);
+    REQUIRE(committed->txn_id == 250);
     REQUIRE(committed->start_ts == 30);
     REQUIRE(committed->durable_ts == 40);
-    REQUIRE(overlapping->txn_id == overlapping_txn_id);
-    REQUIRE(overlapping->start_ts == overlapping_start_ts);
-    REQUIRE(overlapping->durable_ts == overlapping_durable_ts);
+    REQUIRE(committed->commit_state == WT_TRUNCATE_COMMIT_PUBLISHED);
 
     txn_id = 60;
     read_timestamp = 30;
     set_reader(txn_id, read_timestamp);
+    WT_TRUNCATE *matched = nullptr;
+    REQUIRE(truncate_visible(target_only_key) == WT_NOTFOUND);
+
+    matched = nullptr;
+    REQUIRE(truncate_visible(overlap_key, &matched) == WT_NOTFOUND);
+    REQUIRE(matched == nullptr);
+    REQUIRE(truncate_visible(overlap_only_key) == WT_NOTFOUND);
+
+    read_timestamp = 40;
+    set_reader(txn_id, read_timestamp);
+    REQUIRE(truncate_visible(target_only_key) == WT_NOTFOUND);
+
+    matched = nullptr;
+    REQUIRE(truncate_visible(overlap_key, &matched) == 0);
+    REQUIRE(matched == overlapping);
+    REQUIRE(truncate_visible(overlap_only_key) == 0);
+
+    txn_id = 300;
+    set_reader(txn_id, read_timestamp, WT_ISO_SNAPSHOT, 300, 400);
     REQUIRE(truncate_visible(target_only_key) == 0);
 
-    WT_TRUNCATE *matched = nullptr;
+    matched = nullptr;
     REQUIRE(truncate_visible(overlap_key, &matched) == 0);
     REQUIRE(matched == committed);
-    REQUIRE(truncate_visible(overlap_only_key) == WT_NOTFOUND);
+    REQUIRE(truncate_visible(overlap_only_key) == 0);
 }
 
 TEST_CASE_METHOD(layered_truncate_visibility_fixture,
@@ -348,6 +368,7 @@ TEST_CASE_METHOD(layered_truncate_visibility_fixture,
     REQUIRE(TAILQ_NEXT(surviving, q) == nullptr);
 
     const char *key = "0125";
+    set_reader(50, WT_TS_NONE);
     REQUIRE(truncate_visible(key) == WT_NOTFOUND);
 
     WT_TRUNCATE *matched = nullptr;

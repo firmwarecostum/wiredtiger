@@ -85,6 +85,12 @@ struct __wt_truncate {
     wt_timestamp_t prepare_ts; /* Not currently supported. */
     uint64_t prepare_id;       /* Not currently supported. */
 
+    /* Per-entry publication state for commit metadata. Single-use: INIT -> LOCKED -> PUBLISHED. */
+#define WT_TRUNCATE_COMMIT_INIT (uint8_t)0
+#define WT_TRUNCATE_COMMIT_LOCKED (uint8_t)1
+#define WT_TRUNCATE_COMMIT_PUBLISHED (uint8_t)2
+    uint8_t commit_state;
+
     WT_ITEM start_key;
     WT_ITEM stop_key;
 
@@ -120,7 +126,11 @@ struct __wt_layered_table {
      */
     TAILQ_HEAD(__truncate_table_list_qh, __wt_truncate) truncateqh;
 
-    WT_RWLOCK truncate_lock; /* Protects truncate list membership and entry visibility metadata. */
+    /*
+     * Protects truncate list membership (insert/remove/clear). Per-entry visibility metadata is
+     * synchronized lock-free via WT_TRUNCATE.commit_state.
+     */
+    WT_RWLOCK truncate_lock;
 
 /* AUTOMATIC FLAG VALUE GENERATION START 0 */
 #define WT_LAYERED_TABLE_OPEN 0x1u
