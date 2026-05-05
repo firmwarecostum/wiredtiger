@@ -159,19 +159,17 @@ __truncate_read_entry_timestamps(
   WT_TRUNCATE *entry, wt_timestamp_t *start_tsp, wt_timestamp_t *durable_tsp)
 {
     for (uint32_t pause_count = 0;; ++pause_count) {
-        const uint8_t state_before = __wt_atomic_load_uint8_v_acquire(&entry->commit_state);
-        if (state_before == WT_TRUNCATE_COMMIT_INIT) {
+        const uint8_t commit_state = __wt_atomic_load_uint8_acquire(&entry->commit_state);
+        if (commit_state == WT_TRUNCATE_COMMIT_INIT) {
             /* The entry has not been committed yet. */
             *start_tsp = *durable_tsp = WT_TS_NONE;
             return;
         }
 
-        if (state_before != WT_TRUNCATE_COMMIT_PENDING) {
-            *start_tsp = __wt_atomic_load_uint64_relaxed(&entry->start_ts);
-            *durable_tsp = __wt_atomic_load_uint64_relaxed(&entry->durable_ts);
-            const uint8_t state_after = __wt_atomic_load_uint8_v_acquire(&entry->commit_state);
-            if (state_before == state_after)
-                return;
+        if (commit_state == WT_TRUNCATE_COMMIT_PUBLISHED) {
+            *start_tsp = entry->start_ts;
+            *durable_tsp = entry->durable_ts;
+            return;
         }
 
         if (pause_count < WT_HUNDRED)
@@ -345,13 +343,22 @@ __wti_mark_committed_truncate_table_apply(
     WT_UNUSED(layered_table);
 
     WT_ASSERT(
-      session, __wt_atomic_load_uint8_v_relaxed(&entry->commit_state) == WT_TRUNCATE_COMMIT_INIT);
+      session, __wt_atomic_load_uint8_relaxed(&entry->commit_state) == WT_TRUNCATE_COMMIT_INIT);
 
-    __wt_atomic_store_uint8_v_release(&entry->commit_state, WT_TRUNCATE_COMMIT_PENDING);
-    __wt_atomic_store_uint64_relaxed(&entry->start_ts, session->txn->time_point.commit_timestamp);
-    __wt_atomic_store_uint64_relaxed(
-      &entry->durable_ts, session->txn->time_point.durable_timestamp);
-    __wt_atomic_store_uint8_v_release(&entry->commit_state, WT_TRUNCATE_COMMIT_PUBLISHED);
+    /*-
+     * Move the commit_state from INIT -> PENDING -> PUBLISHED around the timestamp writes.
+     *
+     * The final transition to PUBLISHED uses `release` ordering to:
+     * - fence the timestamp writes before the state change,
+     * - signal readers waiting on the state change that the entry is now committed.
+     *
+     * Readers must use `acquire` ordering when loading the commit_state to ensure they see
+     * the committed timestamps.
+     */
+    __wt_atomic_store_uint8_relaxed(&entry->commit_state, WT_TRUNCATE_COMMIT_PENDING);
+    entry->start_ts = session->txn->time_point.commit_timestamp;
+    entry->durable_ts = session->txn->time_point.durable_timestamp;
+    __wt_atomic_store_uint8_release(&entry->commit_state, WT_TRUNCATE_COMMIT_PUBLISHED);
 }
 
 /*
