@@ -89,7 +89,7 @@ struct __wt_truncate {
 #define WT_TRUNCATE_COMMIT_INIT (uint8_t)0
 #define WT_TRUNCATE_COMMIT_PENDING (uint8_t)1
 #define WT_TRUNCATE_COMMIT_PUBLISHED (uint8_t)2
-    uint8_t commit_state;
+    wt_shared uint8_t commit_state;
 
     WT_ITEM start_key;
     WT_ITEM stop_key;
