@@ -150,16 +150,23 @@ err:
 }
 
 /*
- * __truncate_read_metadata --
+ * __truncate_read_entry_timestamps --
  *     Read a stable snapshot of one truncate entry's commit timestamps while concurrent commit
  *     stamping may be in progress.
  */
 static void
-__truncate_read_metadata(WT_TRUNCATE *entry, wt_timestamp_t *start_tsp, wt_timestamp_t *durable_tsp)
+__truncate_read_entry_timestamps(
+  WT_TRUNCATE *entry, wt_timestamp_t *start_tsp, wt_timestamp_t *durable_tsp)
 {
     for (uint32_t pause_count = 0;; ++pause_count) {
         const uint8_t state_before = __wt_atomic_load_uint8_v_acquire(&entry->commit_state);
-        if (state_before != WT_TRUNCATE_COMMIT_LOCKED) {
+        if (state_before == WT_TRUNCATE_COMMIT_INIT) {
+            /* The entry has not been committed yet. */
+            *start_tsp = *durable_tsp = WT_TS_NONE;
+            return;
+        }
+
+        if (state_before != WT_TRUNCATE_COMMIT_PENDING) {
             *start_tsp = __wt_atomic_load_uint64_relaxed(&entry->start_ts);
             *durable_tsp = __wt_atomic_load_uint64_relaxed(&entry->durable_ts);
             const uint8_t state_after = __wt_atomic_load_uint8_v_acquire(&entry->commit_state);
@@ -185,6 +192,7 @@ __truncate_search(WT_SESSION_IMPL *session, WT_LAYERED_TABLE *layered_table, con
   const WT_TRUNCATE_SEARCH_MODE mode, WT_TRUNCATE **tp, bool *is_foundp)
 {
     WT_ASSERT(session, is_foundp != NULL);
+    WT_ASSERT(session, __wt_rwlock_islocked(session, &layered_table->truncate_lock));
     *is_foundp = false;
 
     WT_COLLATOR *collator = layered_table->collator;
@@ -192,8 +200,7 @@ __truncate_search(WT_SESSION_IMPL *session, WT_LAYERED_TABLE *layered_table, con
 
     TAILQ_FOREACH (entry, &layered_table->truncateqh, q) {
         wt_timestamp_t start_ts, durable_ts;
-
-        __truncate_read_metadata(entry, &start_ts, &durable_ts);
+        __truncate_read_entry_timestamps(entry, &start_ts, &durable_ts);
 
         const bool is_visible = __wt_txn_visible(session, entry->txn_id, start_ts, durable_ts);
 
@@ -321,8 +328,8 @@ __disagg_truncate_apply(WT_SESSION_IMPL *session, WT_TXN_OP *op,
 
 /*
  * __wti_mark_committed_truncate_table_apply --
- *     Publish commit metadata onto a truncate entry. The commit_state field moves INIT -> LOCKED ->
- *     PUBLISHED around the timestamp writes; readers retry on LOCKED, so no queue-wide lock is
+ *     Publish commit metadata onto a truncate entry. The commit_state field moves INIT -> PENDING
+ *     -> PUBLISHED around the timestamp writes; readers retry on PENDING, so no queue-wide lock is
  *     required.
  */
 void
@@ -340,7 +347,7 @@ __wti_mark_committed_truncate_table_apply(
     WT_ASSERT(
       session, __wt_atomic_load_uint8_v_relaxed(&entry->commit_state) == WT_TRUNCATE_COMMIT_INIT);
 
-    __wt_atomic_store_uint8_v_release(&entry->commit_state, WT_TRUNCATE_COMMIT_LOCKED);
+    __wt_atomic_store_uint8_v_release(&entry->commit_state, WT_TRUNCATE_COMMIT_PENDING);
     __wt_atomic_store_uint64_relaxed(&entry->start_ts, session->txn->time_point.commit_timestamp);
     __wt_atomic_store_uint64_relaxed(
       &entry->durable_ts, session->txn->time_point.durable_timestamp);

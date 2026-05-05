@@ -85,9 +85,9 @@ struct __wt_truncate {
     wt_timestamp_t prepare_ts; /* Not currently supported. */
     uint64_t prepare_id;       /* Not currently supported. */
 
-    /* Per-entry publication state for commit metadata. Single-use: INIT -> LOCKED -> PUBLISHED. */
+    /* Per-entry publication state for commit metadata. Single-use: INIT -> PENDING -> PUBLISHED. */
 #define WT_TRUNCATE_COMMIT_INIT (uint8_t)0
-#define WT_TRUNCATE_COMMIT_LOCKED (uint8_t)1
+#define WT_TRUNCATE_COMMIT_PENDING (uint8_t)1
 #define WT_TRUNCATE_COMMIT_PUBLISHED (uint8_t)2
     uint8_t commit_state;
 
