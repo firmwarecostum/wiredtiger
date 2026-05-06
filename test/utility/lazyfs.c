@@ -34,6 +34,7 @@
 #include <sys/wait.h>
 #include <libgen.h>
 #include <signal.h>
+#include <stdlib.h>
 #endif
 
 #ifdef __linux__
