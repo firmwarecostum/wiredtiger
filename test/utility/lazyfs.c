@@ -34,7 +34,12 @@
 #include <sys/wait.h>
 #include <libgen.h>
 #include <signal.h>
+#include <unistd.h>
+#include <stdlib.h>
 #endif
+
+#include <unistd.h>
+#include <stdlib.h>
 
 #ifdef __linux__
 #define LAZYFS_PATH "../../../lazyfs/src/lazyfs/lazyfs"
